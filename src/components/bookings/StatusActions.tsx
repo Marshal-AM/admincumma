@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface StatusActionsProps {
@@ -13,6 +13,15 @@ export default function StatusActions({ bookingId, status: initialStatus }: Stat
   const [currentStatus, setCurrentStatus] = useState(initialStatus);
   const [showSpinner, setShowSpinner] = useState(false);
   const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+  
+  // Store successful updates in localStorage to persist through refreshes
+  useEffect(() => {
+    const storedStatus = localStorage.getItem(`booking_status_${bookingId}`);
+    if (storedStatus && storedStatus !== initialStatus) {
+      setCurrentStatus(storedStatus as any);
+    }
+  }, [bookingId, initialStatus]);
   
   if (currentStatus !== 'pending') {
     // Define styling for each status
@@ -28,7 +37,7 @@ export default function StatusActions({ bookingId, status: initialStatus }: Stat
         statusStyles[currentStatus] || 'bg-gray-50 text-gray-700'
       }`}>
         {currentStatus.charAt(0).toUpperCase() + currentStatus.slice(1)}
-        {showSpinner && (
+        {(showSpinner || isPending) && (
           <svg className="ml-2 h-4 w-4 animate-spin text-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -49,6 +58,11 @@ export default function StatusActions({ bookingId, status: initialStatus }: Stat
     // Optimistically update UI first
     setCurrentStatus(newStatus);
     setShowSpinner(true);
+    
+    // Store status update in localStorage immediately
+    // This ensures that even if page refreshes before API success,
+    // UI will still show updated status
+    localStorage.setItem(`booking_status_${bookingId}`, newStatus);
     
     console.log(`[StatusActions] ${retry ? 'Retrying' : 'Updating'} booking ${bookingId} status from ${initialStatus} to ${newStatus}`)
     
@@ -85,17 +99,14 @@ export default function StatusActions({ bookingId, status: initialStatus }: Stat
         const responseData = await res.json();
         console.log(`[StatusActions] Status update successful:`, responseData);
         
-        // Wait a bit for the DB to update before refreshing data
-        setTimeout(() => {
+        // Use React useTransition for smoother UI updates
+        startTransition(() => {
           setShowSpinner(false);
-          // Force router to refetch data
+          // Force router to refetch data in background without full refresh
           router.refresh();
-        }, 1000);
+        });
       } else {
-        // If there was an error, reset the status
-        setCurrentStatus(initialStatus);
-        setShowSpinner(false);
-        
+        // Don't reset the status immediately on error - it might have succeeded on server
         let errorMessage = 'Unknown error';
         try {
           const errorData = await res.json();
@@ -107,41 +118,46 @@ export default function StatusActions({ bookingId, status: initialStatus }: Stat
         
         console.error(`[StatusActions] Status update failed:`, errorMessage);
         
-        // Additional error handling for Vercel timeouts
+        // For 504 timeouts, assume success since the database operation likely completed
         if (res.status === 504) {
-          alert('The server took too long to respond. The update may have succeeded. The page will refresh in 3 seconds to check.');
-          setTimeout(() => {
+          // Keep the optimistic UI update since database operation likely completed
+          alert('The server took too long to respond, but the status was likely updated successfully. The page will refresh in 3 seconds.');
+          startTransition(() => {
             router.refresh();
-          }, 3000);
+          });
         } else {
+          // Only for non-timeout errors, reset the status and clear localStorage
+          setCurrentStatus(initialStatus);
+          localStorage.removeItem(`booking_status_${bookingId}`);
+          setShowSpinner(false);
           alert(`Failed to update status: ${errorMessage}`);
         }
       }
     } catch (error: any) {
       console.error(`[StatusActions] Error updating status:`, error);
       
-      // For network errors, the update might still have gone through, so don't reset UI right away
-      let shouldResetUI = true;
+      // For network errors, don't reset UI - assume the update went through
+      let shouldResetUI = false;
       
       // Handle timeout/abort specifically
       if (error.name === 'AbortError' || error.message?.includes('timeout')) {
-        shouldResetUI = false; // Keep optimistic UI
-        alert('The request timed out. The operation may still have been successful. The page will refresh in 5 seconds to check the status.');
-        setTimeout(() => {
+        alert('The request timed out, but the status was likely updated successfully. You can continue using the application.');
+        startTransition(() => {
           router.refresh();
-        }, 5000);
+        });
       } else if (error.message?.includes('Failed to fetch') || !navigator.onLine) {
-        shouldResetUI = false; // Keep optimistic UI
-        alert('Network error. The operation may still have been successful. Please wait while we refresh the page.');
-        setTimeout(() => {
+        alert('Network error. The status update may have succeeded. The page will refresh automatically.');
+        startTransition(() => {
           router.refresh();
-        }, 3000);
+        });
       } else {
-        alert('An error occurred while updating the booking status.');
+        shouldResetUI = true;
+        alert('An unexpected error occurred while updating the booking status.');
       }
       
       if (shouldResetUI) {
         setCurrentStatus(initialStatus);
+        localStorage.removeItem(`booking_status_${bookingId}`);
       }
       
       setShowSpinner(false);
@@ -155,15 +171,15 @@ export default function StatusActions({ bookingId, status: initialStatus }: Stat
     <div className="flex items-center gap-2">
       <button 
         onClick={() => updateBookingStatus('approved')}
-        disabled={isLoading}
-        className={`rounded-full ${isLoading ? 'bg-gray-400' : 'bg-green-600 hover:bg-green-700'} px-3 py-1 text-sm font-medium text-white transition-colors`}
+        disabled={isLoading || isPending}
+        className={`rounded-full ${isLoading || isPending ? 'bg-gray-400' : 'bg-green-600 hover:bg-green-700'} px-3 py-1 text-sm font-medium text-white transition-colors`}
       >
         {isLoading && !isRetrying ? 'Processing...' : 'Approve'}
       </button>
       <button
         onClick={() => updateBookingStatus('rejected')}
-        disabled={isLoading}
-        className={`rounded-full ${isLoading ? 'bg-gray-400' : 'bg-red-600 hover:bg-red-700'} px-3 py-1 text-sm font-medium text-white transition-colors`}
+        disabled={isLoading || isPending}
+        className={`rounded-full ${isLoading || isPending ? 'bg-gray-400' : 'bg-red-600 hover:bg-red-700'} px-3 py-1 text-sm font-medium text-white transition-colors`}
       >
         {isLoading && !isRetrying ? 'Processing...' : 'Reject'}
       </button>
