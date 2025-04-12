@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  --primary: #22C55E;
+  --primary-foreground: #ffffff;
+  --muted: #6B7280;
+  --sidebar-bg: #ffffff;
+  --sidebar-hover: #F3F4F6;
+  --sidebar-active: #22C55E;
+  --sidebar-active-bg: #DCFCE7;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: system-ui, -apple-system, sans-serif;
+}
